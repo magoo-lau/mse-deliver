@@ -1,0 +1,188 @@
+{
+  "apps": [
+    {
+      "code": "demo-app",
+      "name": "示例·许可校验型应用（附件链完整接线）",
+      "defaultVersion": "1.0.0",
+      "units": [
+        {
+          "code": "server",
+          "name": "后端服务",
+          "role": "backend",
+          "source": "image_ref",
+          "imageRepo": "demo/server",
+          "imageRef": "demo/server:1.0.0",
+          "port": "8080",
+          "healthPath": "/healthz",
+          "entrypoint": true,
+          "composeTemplate": "  server:\n    image: {{UNIT_IMAGE}}\n    restart: unless-stopped\n    environment:\n      TZ: Asia/Shanghai\n      APP_CONFIG_DIR: /app/conf\n    volumes:\n      - ./data/conf:/app/conf\n      - ./data/app:/app/data\n    ports:\n      - \"8080:8080\"\n    depends_on:\n      - demo-mysql\n",
+          "confDir": "/app/conf",
+          "confEnv": {
+            "APP_CONFIG_DIR": "/app/conf"
+          },
+          "configTemplate": "# 示例配置模板：安装期变量由 deliver-console 渲染进 data/conf。\n# 附件链对应用的要求（非阻断）：在应用定义声明同名 install 变量 + 模板引用——\n# 交付附件包 delivery/vars.env 携带同名键时 console 表单自动预填（免手输）；\n# 未声明的附件键只在重打包日志出一条提示，安装表单仍可手动输入。\napp:\n  tenant:\n    id: {{TENANT_ID}}\n    code: \"{{TENANT_CODE}}\"\n    name: \"{{TENANT_NAME}}\"\n  # 许可校验型应用标准接线：公钥渲染进配置，license.token 随附件落 data/conf（入口主机配置目录）\n  license:\n    public-key: \"{{LICENSE_PUBLIC_KEY}}\"\n    file: ./conf/license.token\n  db:\n    url: jdbc:mysql://{{DB_HOST}}:{{DB_PORT}}/demo\n    username: {{DB_USER}}\n    password: \"{{DB_PASSWORD}}\"\n  redis:\n    host: {{REDIS_HOST}}\n    port: {{REDIS_PORT}}\n",
+          "remark": "入口单元：占位镜像 demo/server——打包时在「镜像来源」换成自己的镜像/应用包；配置模板示范租户四件套 + 组件端点接线"
+        },
+        {
+          "code": "web",
+          "name": "前端站点",
+          "role": "frontend",
+          "source": "artifact",
+          "imageRepo": "demo/web",
+          "dockerfile": "FROM nginx:stable-alpine\nCOPY nginx.conf /etc/nginx/conf.d/default.conf\nCOPY . /usr/share/nginx/html",
+          "port": "80",
+          "entrypoint": false,
+          "composeTemplate": "  web:\n    image: {{UNIT_IMAGE}}\n    restart: unless-stopped\n    ports:\n      - \"80:80\"\n    depends_on:\n      - server\n",
+          "remark": "UI zip 制品（dist + nginx.conf）现场构建——示范「应用包构建」拼法"
+        }
+      ],
+      "variables": [
+        {
+          "name": "TENANT_ID",
+          "label": "租户编号（附件 vars.env 自动预填）",
+          "when": "install",
+          "source": "input",
+          "value": "1"
+        },
+        {
+          "name": "TENANT_CODE",
+          "label": "租户编码（附件 vars.env 自动预填）",
+          "when": "install",
+          "source": "input",
+          "value": ""
+        },
+        {
+          "name": "TENANT_NAME",
+          "label": "租户名称（附件 vars.env 自动预填）",
+          "when": "install",
+          "source": "input",
+          "value": ""
+        },
+        {
+          "name": "LICENSE_PUBLIC_KEY",
+          "label": "许可公钥（附件 vars.env 自动预填）",
+          "when": "install",
+          "source": "input",
+          "value": ""
+        }
+      ],
+      "defaultComponents": [
+        "demo-mysql",
+        "demo-redis"
+      ],
+      "remark": "教学样例：演示「附件链对应用的要求」——声明同名安装变量 + 配置模板引用，附件 vars.env 预填命中免手输；出交付包叠加 license/租户数据附件即完整交付物"
+    },
+    {
+      "code": "demo-lite",
+      "name": "示例·极简应用（无附件依赖）",
+      "defaultVersion": "1.0.0",
+      "units": [
+        {
+          "code": "solo",
+          "name": "单体服务",
+          "role": "backend",
+          "source": "image_ref",
+          "imageRepo": "demo/solo",
+          "imageRef": "demo/solo:1.0.0",
+          "port": "9000",
+          "healthPath": "/healthz",
+          "entrypoint": true,
+          "composeTemplate": "  solo:\n    image: {{UNIT_IMAGE}}\n    restart: unless-stopped\n    ports:\n      - \"9000:9000\"\n",
+          "remark": "极简单元：无配置模板、无自定义变量（组件端点/凭据仍随勾选组件注入）"
+        }
+      ],
+      "variables": [],
+      "defaultComponents": [
+        "demo-redis"
+      ],
+      "remark": "教学样例：附件链是可选能力——本应用不声明租户/许可变量，叠加附件只会得到一条「预填不命中」提示，出包与安装不受影响"
+    }
+  ],
+  "components": [
+    {
+      "code": "demo-mysql",
+      "name": "示例 MySQL 8.4",
+      "category": "database",
+      "defaultChecked": true,
+      "images": [
+        "mysql:8.4"
+      ],
+      "composeServices": "  demo-mysql:\n    image: mysql:8.4\n    restart: unless-stopped\n    environment:\n      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-demo@2026}\n      MYSQL_DATABASE: demo\n      TZ: Asia/Shanghai\n    volumes:\n      - ./data/demo-mysql:/var/lib/mysql\n      # 部署包 extras/ 内 *.sql（表结构预置）：MySQL 首启（空数据目录）自动执行；\n      # 交付附件包的 extras/schema.sql 落位于此，实现租户库结构随附件交付\n      - ./extras:/docker-entrypoint-initdb.d:ro\n    ports:\n      - \"3306:3306\"\n",
+      "files": [],
+      "endpoints": [
+        {
+          "placeholder": "DB_HOST",
+          "label": "数据库地址",
+          "service": "demo-mysql",
+          "port": "3306",
+          "from": "host"
+        },
+        {
+          "placeholder": "DB_PORT",
+          "label": "数据库端口",
+          "service": "demo-mysql",
+          "port": "3306",
+          "from": "port"
+        }
+      ],
+      "credentials": [
+        {
+          "placeholder": "DB_USER",
+          "label": "数据库账号",
+          "generate": "const",
+          "value": "root"
+        },
+        {
+          "placeholder": "DB_PASSWORD",
+          "label": "数据库密码（留空随机）",
+          "generate": "random"
+        },
+        {
+          "placeholder": "MYSQL_ROOT_PASSWORD",
+          "label": "MySQL root 密码（同源写 .env）",
+          "env": "MYSQL_ROOT_PASSWORD",
+          "generate": "random"
+        }
+      ],
+      "schema": {
+        "dir": "extras",
+        "image": "mysql:8.4",
+        "host": "DB_HOST",
+        "port": "3306",
+        "user": "DB_USER",
+        "password": "DB_PASSWORD",
+        "database": "demo"
+      },
+      "remark": "示例组件：编码 demo- 前缀与 ai-mse 预设共存（组件目录按编码 upsert，勿与既有组件重名）"
+    },
+    {
+      "code": "demo-redis",
+      "name": "示例 Redis 7",
+      "category": "cache",
+      "defaultChecked": true,
+      "images": [
+        "redis:7-alpine"
+      ],
+      "composeServices": "  demo-redis:\n    image: redis:7-alpine\n    restart: unless-stopped\n    volumes:\n      - ./data/demo-redis:/data\n    ports:\n      - \"6379:6379\"\n",
+      "files": [],
+      "endpoints": [
+        {
+          "placeholder": "REDIS_HOST",
+          "label": "Redis 地址",
+          "service": "demo-redis",
+          "port": "6379",
+          "from": "host"
+        },
+        {
+          "placeholder": "REDIS_PORT",
+          "label": "Redis 端口",
+          "service": "demo-redis",
+          "port": "6379",
+          "from": "port"
+        }
+      ],
+      "credentials": [],
+      "remark": "示例组件：无凭据（端点占位符仍随勾选注入应用变量域）"
+    }
+  ]
+}

@@ -1,0 +1,1167 @@
+{
+  "apps": [
+    {
+      "code": "mse-monolith",
+      "name": "ai-mse 租户单体",
+      "defaultVersion": "1.0.0",
+      "units": [
+        {
+          "code": "app",
+          "name": "后端服务",
+          "role": "backend",
+          "source": "artifact",
+          "imageRepo": "mse/mse-monolith",
+          "dockerfile": "ARG RUNTIME_IMAGE=eclipse-temurin:21-jre-jammy\nFROM ${RUNTIME_IMAGE}\nENV TZ=Asia/Shanghai JAVA_OPTS=\"-XX:MaxRAMPercentage=75.0\"\nWORKDIR /app\nCOPY {{ARTIFACT_FILE}} app.jar\nEXPOSE 8080\nENTRYPOINT [\"sh\", \"-c\", \"java $JAVA_OPTS -jar app.jar\"]",
+          "port": "8080",
+          "healthPath": "/actuator/health",
+          "entrypoint": true,
+          "composeTemplate": "  app:\n    image: {{UNIT_IMAGE}}\n    restart: unless-stopped\n    environment:\n      TZ: Asia/Shanghai\n      SPRING_CONFIG_ADDITIONAL_LOCATION: file:/app/conf/\n    volumes:\n      - ./data/conf:/app/conf\n      - ./data/app:/app/data\n    ports:\n      - \"8080:8080\"\n",
+          "confDir": "/app/conf",
+          "confEnv": {
+            "SPRING_CONFIG_ADDITIONAL_LOCATION": "file:/app/conf/"
+          },
+          "configTemplate": "# ai-mse 租户单体应用配置——基准 mse-sample/mse-monolith/src/main/resources/application.yaml（0.1.0 数据源模型：\n# primary=platform 平台库 + shared-main 租户共享库，两库均 createDatabaseIfNotExist 首连自建，结构由 auto-migrate 迁移）。\n# 未选中间件的配置段不会出现在包里：可选能力保守默认全 OFF，勾选对应组件时其配置段（--- 多文档追加）显式开启。\nmse:\n  standalone:\n    enabled: true\n    tenant-id: {{TENANT_ID}}\n    tenant-code: \"{{TENANT_CODE}}\"\n    tenant-name: \"{{TENANT_NAME}}\"\n  license:\n    public-key: \"{{LICENSE_PUBLIC_KEY}}\"\n    file: ./conf/license.token\n    grace-days: 15\n  rpc:\n    mode: local\n  scheduling:\n    mode: local\n    startup-delay: 30s\n    pool-size: 4\n    state-sync-interval: 15s\n    guard-enabled: true\n  actuator:\n    auth:\n      token: \"\"\n  tenant:\n    # 内置共享租户库（自 declare 注册内置池；SharedMainBootstrap 建库+eager 建身份表）\n    shared-main:\n      url: jdbc:mysql://{{DB_HOST}}:{{DB_PORT}}/{{DB_NAME}}?createDatabaseIfNotExist=true&useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useInformationSchema=true&nullCatalogMeansCurrent=true\n      username: {{DB_USER}}\n      password: \"{{DB_PASSWORD}}\"\n      db-type: mysql\n    schema:\n      auto-migrate: true\n    # 租户数据源密码 AES 密钥（与导出/重导数据配对，改值后已录数据源需重新保存密码）\n    dynamic-ds:\n      encrypt-key: mse-ds-dev-key-2026\n  ai:\n    # 保守默认：未勾选 milvus 组件时知识库仅存 MySQL 不向量化（组件段显式开启并接 milvus-host/port）\n    milvus-enabled: false\n    # 知识库原文件归档目录（落 data 卷持久化）\n    kb-storage-path: ./data/ai-kb\n  biz-query:\n    allow-prefixes: [mes_, oa_, mp_]\n    deny-prefixes: [sys_, ai_, dat_, open_, fs_, search_, im_, mon_, ods_, undo_]\n    deny-tables: []\n    max-rows: 200\n    timeout-millis: 10000\n  fs:\n    storage:\n      # 保守默认本地盘（勾选 rustfs 组件时组件段切换 rustfs 端点/凭据）\n      type: local\n      local:\n        base-dir: ./data/fs-files\n  mybatis:\n    slow-sql:\n      enabled: true\n      threshold-ms: 2000\n  monitor:\n    # 租户离线私有部署口径（未聚合 monitor 模块时本键冗余无害）\n    offline: true\n  im:\n    # 保守默认关闭（勾选 openim 组件时组件段显式开启并接 api/ws 地址）\n    enabled: false\nspring:\n  application:\n    name: mse-tenant-standalone\n  servlet:\n    multipart:\n      max-file-size: 20GB\n      max-request-size: 20GB\n  threads:\n    virtual:\n      enabled: false\n  datasource:\n    dynamic:\n      primary: platform\n      strict: false\n      lazy: true\n      # 动态注册的租户/共享库池继承全局上限（每库小池，防总连接数爆炸）\n      hikari:\n        maximum-pool-size: 5\n        minimum-idle: 1\n        idle-timeout: 300000\n        max-lifetime: 1800000\n        connection-timeout: 10000\n      datasource:\n        platform:\n          driver-class-name: com.mysql.cj.jdbc.Driver\n          url: jdbc:mysql://{{DB_HOST}}:{{DB_PORT}}/{{PLATFORM_DB_NAME}}?createDatabaseIfNotExist=true&useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useInformationSchema=true&nullCatalogMeansCurrent=true\n          username: {{DB_USER}}\n          password: \"{{DB_PASSWORD}}\"\n  data:\n    redis:\n      host: {{REDIS_HOST}}\n      port: {{REDIS_PORT}}\n  ai:\n    # 无默认 ChatModel 时必须显式关闭（模型经 AI 平台「模型管理」动态配置，走 ai_model 表）\n    chat:\n      client:\n        enabled: false\n# Flowable（oa-bpm，含 oa 模块时生效）：结构走版本化脚本/引擎自建；事件注册表禁用（Flowable 8.0.0 全新库 bug）\nflowable:\n  database-schema-update: true\n  async-executor-activate: true\n  eventregistry:\n    enabled: false\nmanagement:\n  endpoints:\n    web:\n      exposure:\n        include: health,info,metrics,slowsql\nlogging:\n  level:\n    vip.mseapp: info\n  pattern:\n    correlation: \"[trace:%X{traceId:-} tenant:%X{tenantId:-} user:%X{userId:-} ds:%X{ds:-}] \"\n",
+          "remark": "入口单元：对外端口与健康检查"
+        },
+        {
+          "code": "web",
+          "name": "前端站点",
+          "role": "frontend",
+          "source": "artifact",
+          "imageRepo": "mse/mse-nginx",
+          "dockerfile": "FROM nginx:stable-alpine\nCOPY nginx.conf /etc/nginx/conf.d/default.conf\nCOPY . /usr/share/nginx/html",
+          "port": "80",
+          "entrypoint": false,
+          "composeTemplate": "  web:\n    image: {{UNIT_IMAGE}}\n    restart: unless-stopped\n    ports:\n      - \"80:80\"\n    depends_on:\n      - app\n",
+          "remark": "UI zip 制品（dist + nginx.conf）现场构建"
+        }
+      ],
+      "variables": [
+        {
+          "name": "TENANT_ID",
+          "label": "租户编号",
+          "when": "install",
+          "source": "input",
+          "value": "1"
+        },
+        {
+          "name": "TENANT_CODE",
+          "label": "租户编码",
+          "when": "install",
+          "source": "input",
+          "value": ""
+        },
+        {
+          "name": "TENANT_NAME",
+          "label": "租户名称",
+          "when": "install",
+          "source": "input",
+          "value": ""
+        },
+        {
+          "name": "LICENSE_PUBLIC_KEY",
+          "label": "许可公钥（附件 vars.env 自动预填）",
+          "when": "install",
+          "source": "input",
+          "value": ""
+        },
+        {
+          "name": "DB_HOST",
+          "label": "MySQL 地址（未勾 mysql 组件时填外部库）",
+          "when": "install",
+          "source": "input",
+          "value": ""
+        },
+        {
+          "name": "DB_PORT",
+          "label": "MySQL 端口",
+          "when": "install",
+          "source": "input",
+          "value": "3306"
+        },
+        {
+          "name": "DB_NAME",
+          "label": "租户共享库名",
+          "when": "install",
+          "source": "input",
+          "value": "mse_tenant"
+        },
+        {
+          "name": "PLATFORM_DB_NAME",
+          "label": "平台库名",
+          "when": "install",
+          "source": "input",
+          "value": "mse_platform"
+        },
+        {
+          "name": "DB_USER",
+          "label": "应用账号",
+          "when": "install",
+          "source": "input",
+          "value": "root"
+        },
+        {
+          "name": "DB_PASSWORD",
+          "label": "应用库密码（未勾 mysql 组件时填外部库密码）",
+          "when": "install",
+          "source": "input",
+          "value": ""
+        },
+        {
+          "name": "REDIS_HOST",
+          "label": "Redis 地址（未勾 redis 组件时填外部）",
+          "when": "install",
+          "source": "input",
+          "value": ""
+        },
+        {
+          "name": "REDIS_PORT",
+          "label": "Redis 端口",
+          "when": "install",
+          "source": "input",
+          "value": "6379"
+        }
+      ],
+      "remark": "collect-kit collect --package 一键出套件（--ui 时用本应用）；平台签发附件后经「出交付包」重打包成最终交付包；配置基准=mse-monolith application.yaml（0.1.0 平台库+租户共享库双库模型）"
+    },
+    {
+      "code": "mse-monolith-headless",
+      "name": "ai-mse 租户单体（无前端）",
+      "defaultVersion": "1.0.0",
+      "units": [
+        {
+          "code": "app",
+          "name": "后端服务",
+          "role": "backend",
+          "source": "image_ref",
+          "imageRepo": "mse/mse-monolith",
+          "imageRef": "mse/mse-monolith:1.0.0",
+          "port": "8080",
+          "healthPath": "/actuator/health",
+          "entrypoint": true,
+          "composeTemplate": "  app:\n    image: {{UNIT_IMAGE}}\n    restart: unless-stopped\n    environment:\n      TZ: Asia/Shanghai\n      SPRING_CONFIG_ADDITIONAL_LOCATION: file:/app/conf/\n    volumes:\n      - ./data/conf:/app/conf\n      - ./data/app:/app/data\n    ports:\n      - \"8080:8080\"\n",
+          "confDir": "/app/conf",
+          "confEnv": {
+            "SPRING_CONFIG_ADDITIONAL_LOCATION": "file:/app/conf/"
+          },
+          "configTemplate": "# ai-mse 租户单体应用配置——基准 mse-sample/mse-monolith/src/main/resources/application.yaml（0.1.0 数据源模型：\n# primary=platform 平台库 + shared-main 租户共享库，两库均 createDatabaseIfNotExist 首连自建，结构由 auto-migrate 迁移）。\n# 未选中间件的配置段不会出现在包里：可选能力保守默认全 OFF，勾选对应组件时其配置段（--- 多文档追加）显式开启。\nmse:\n  standalone:\n    enabled: true\n    tenant-id: {{TENANT_ID}}\n    tenant-code: \"{{TENANT_CODE}}\"\n    tenant-name: \"{{TENANT_NAME}}\"\n  license:\n    public-key: \"{{LICENSE_PUBLIC_KEY}}\"\n    file: ./conf/license.token\n    grace-days: 15\n  rpc:\n    mode: local\n  scheduling:\n    mode: local\n    startup-delay: 30s\n    pool-size: 4\n    state-sync-interval: 15s\n    guard-enabled: true\n  actuator:\n    auth:\n      token: \"\"\n  tenant:\n    # 内置共享租户库（自 declare 注册内置池；SharedMainBootstrap 建库+eager 建身份表）\n    shared-main:\n      url: jdbc:mysql://{{DB_HOST}}:{{DB_PORT}}/{{DB_NAME}}?createDatabaseIfNotExist=true&useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useInformationSchema=true&nullCatalogMeansCurrent=true\n      username: {{DB_USER}}\n      password: \"{{DB_PASSWORD}}\"\n      db-type: mysql\n    schema:\n      auto-migrate: true\n    # 租户数据源密码 AES 密钥（与导出/重导数据配对，改值后已录数据源需重新保存密码）\n    dynamic-ds:\n      encrypt-key: mse-ds-dev-key-2026\n  ai:\n    # 保守默认：未勾选 milvus 组件时知识库仅存 MySQL 不向量化（组件段显式开启并接 milvus-host/port）\n    milvus-enabled: false\n    # 知识库原文件归档目录（落 data 卷持久化）\n    kb-storage-path: ./data/ai-kb\n  biz-query:\n    allow-prefixes: [mes_, oa_, mp_]\n    deny-prefixes: [sys_, ai_, dat_, open_, fs_, search_, im_, mon_, ods_, undo_]\n    deny-tables: []\n    max-rows: 200\n    timeout-millis: 10000\n  fs:\n    storage:\n      # 保守默认本地盘（勾选 rustfs 组件时组件段切换 rustfs 端点/凭据）\n      type: local\n      local:\n        base-dir: ./data/fs-files\n  mybatis:\n    slow-sql:\n      enabled: true\n      threshold-ms: 2000\n  monitor:\n    # 租户离线私有部署口径（未聚合 monitor 模块时本键冗余无害）\n    offline: true\n  im:\n    # 保守默认关闭（勾选 openim 组件时组件段显式开启并接 api/ws 地址）\n    enabled: false\nspring:\n  application:\n    name: mse-tenant-standalone\n  servlet:\n    multipart:\n      max-file-size: 20GB\n      max-request-size: 20GB\n  threads:\n    virtual:\n      enabled: false\n  datasource:\n    dynamic:\n      primary: platform\n      strict: false\n      lazy: true\n      # 动态注册的租户/共享库池继承全局上限（每库小池，防总连接数爆炸）\n      hikari:\n        maximum-pool-size: 5\n        minimum-idle: 1\n        idle-timeout: 300000\n        max-lifetime: 1800000\n        connection-timeout: 10000\n      datasource:\n        platform:\n          driver-class-name: com.mysql.cj.jdbc.Driver\n          url: jdbc:mysql://{{DB_HOST}}:{{DB_PORT}}/{{PLATFORM_DB_NAME}}?createDatabaseIfNotExist=true&useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useInformationSchema=true&nullCatalogMeansCurrent=true\n          username: {{DB_USER}}\n          password: \"{{DB_PASSWORD}}\"\n  data:\n    redis:\n      host: {{REDIS_HOST}}\n      port: {{REDIS_PORT}}\n  ai:\n    # 无默认 ChatModel 时必须显式关闭（模型经 AI 平台「模型管理」动态配置，走 ai_model 表）\n    chat:\n      client:\n        enabled: false\n# Flowable（oa-bpm，含 oa 模块时生效）：结构走版本化脚本/引擎自建；事件注册表禁用（Flowable 8.0.0 全新库 bug）\nflowable:\n  database-schema-update: true\n  async-executor-activate: true\n  eventregistry:\n    enabled: false\nmanagement:\n  endpoints:\n    web:\n      exposure:\n        include: health,info,metrics,slowsql\nlogging:\n  level:\n    vip.mseapp: info\n  pattern:\n    correlation: \"[trace:%X{traceId:-} tenant:%X{tenantId:-} user:%X{userId:-} ds:%X{ds:-}] \"\n",
+          "remark": "无前端变体（collect-kit 未带 --ui 时用本应用）"
+        }
+      ],
+      "variables": [
+        {
+          "name": "TENANT_ID",
+          "label": "租户编号",
+          "when": "install",
+          "source": "input",
+          "value": "1"
+        },
+        {
+          "name": "TENANT_CODE",
+          "label": "租户编码",
+          "when": "install",
+          "source": "input",
+          "value": ""
+        },
+        {
+          "name": "TENANT_NAME",
+          "label": "租户名称",
+          "when": "install",
+          "source": "input",
+          "value": ""
+        },
+        {
+          "name": "LICENSE_PUBLIC_KEY",
+          "label": "许可公钥（附件 vars.env 自动预填）",
+          "when": "install",
+          "source": "input",
+          "value": ""
+        },
+        {
+          "name": "DB_HOST",
+          "label": "MySQL 地址（未勾 mysql 组件时填外部库）",
+          "when": "install",
+          "source": "input",
+          "value": ""
+        },
+        {
+          "name": "DB_PORT",
+          "label": "MySQL 端口",
+          "when": "install",
+          "source": "input",
+          "value": "3306"
+        },
+        {
+          "name": "DB_NAME",
+          "label": "租户共享库名",
+          "when": "install",
+          "source": "input",
+          "value": "mse_tenant"
+        },
+        {
+          "name": "PLATFORM_DB_NAME",
+          "label": "平台库名",
+          "when": "install",
+          "source": "input",
+          "value": "mse_platform"
+        },
+        {
+          "name": "DB_USER",
+          "label": "应用账号",
+          "when": "install",
+          "source": "input",
+          "value": "root"
+        },
+        {
+          "name": "DB_PASSWORD",
+          "label": "应用库密码（未勾 mysql 组件时填外部库密码）",
+          "when": "install",
+          "source": "input",
+          "value": ""
+        },
+        {
+          "name": "REDIS_HOST",
+          "label": "Redis 地址（未勾 redis 组件时填外部）",
+          "when": "install",
+          "source": "input",
+          "value": ""
+        },
+        {
+          "name": "REDIS_PORT",
+          "label": "Redis 端口",
+          "when": "install",
+          "source": "input",
+          "value": "6379"
+        }
+      ],
+      "remark": "collect-kit collect --package 一键出套件（--ui 时用本应用）；平台签发附件后经「出交付包」重打包成最终交付包；配置基准=mse-monolith application.yaml（0.1.0 平台库+租户共享库双库模型）"
+    },
+    {
+      "code": "mse-micro",
+      "name": "ai-mse 微服务套件",
+      "defaultVersion": "1.0.0",
+      "units": [
+        {
+          "code": "gateway",
+          "name": "gateway",
+          "role": "backend",
+          "source": "image_ref",
+          "imageRepo": "mse/mse-gateway",
+          "imageRef": "mse/mse-gateway:1.0.0",
+          "port": "48080",
+          "healthPath": "/actuator/health",
+          "entrypoint": false,
+          "composeTemplate": "  gateway:\n    image: {{UNIT_IMAGE}}\n    restart: unless-stopped\n    environment:\n      TZ: Asia/Shanghai\n    ports:\n      - \"48080:48080\"\n    depends_on:\n      - nacos\n",
+          "remark": "微服务单元（配置经 Nacos 配置中心，无本地外挂）"
+        },
+        {
+          "code": "web",
+          "name": "前端站点",
+          "role": "frontend",
+          "source": "artifact",
+          "imageRepo": "mse/mse-nginx-micro",
+          "port": "80",
+          "entrypoint": true,
+          "composeTemplate": "  web:\n    image: {{UNIT_IMAGE}}\n    restart: unless-stopped\n    ports:\n      - \"80:80\"\n    depends_on:\n      - gateway\n",
+          "remark": "UI zip 制品现场构建（nginx.conf 由 collect-kit 生成：/api → gateway:48080）",
+          "dockerfile": "FROM nginx:stable-alpine\nCOPY nginx.conf /etc/nginx/conf.d/default.conf\nCOPY . /usr/share/nginx/html"
+        },
+        {
+          "code": "system",
+          "name": "system",
+          "role": "backend",
+          "source": "image_ref",
+          "imageRepo": "mse/mse-system",
+          "imageRef": "mse/mse-system:1.0.0",
+          "port": "48081",
+          "healthPath": "/actuator/health",
+          "entrypoint": false,
+          "composeTemplate": "  system:\n    image: {{UNIT_IMAGE}}\n    restart: unless-stopped\n    environment:\n      TZ: Asia/Shanghai\n    ports:\n      - \"48081:48081\"\n    depends_on:\n      - nacos\n",
+          "remark": "微服务单元（配置经 Nacos 配置中心，无本地外挂）"
+        },
+        {
+          "code": "platform",
+          "name": "platform",
+          "role": "backend",
+          "source": "image_ref",
+          "imageRepo": "mse/mse-platform",
+          "imageRef": "mse/mse-platform:1.0.0",
+          "port": "48082",
+          "healthPath": "/actuator/health",
+          "entrypoint": false,
+          "composeTemplate": "  platform:\n    image: {{UNIT_IMAGE}}\n    restart: unless-stopped\n    environment:\n      TZ: Asia/Shanghai\n    ports:\n      - \"48082:48082\"\n    depends_on:\n      - nacos\n",
+          "remark": "微服务单元（配置经 Nacos 配置中心，无本地外挂）"
+        },
+        {
+          "code": "auth",
+          "name": "auth",
+          "role": "backend",
+          "source": "image_ref",
+          "imageRepo": "mse/mse-auth",
+          "imageRef": "mse/mse-auth:1.0.0",
+          "port": "48083",
+          "healthPath": "/actuator/health",
+          "entrypoint": false,
+          "composeTemplate": "  auth:\n    image: {{UNIT_IMAGE}}\n    restart: unless-stopped\n    environment:\n      TZ: Asia/Shanghai\n    ports:\n      - \"48083:48083\"\n    depends_on:\n      - nacos\n",
+          "remark": "微服务单元（配置经 Nacos 配置中心，无本地外挂）"
+        },
+        {
+          "code": "job",
+          "name": "job",
+          "role": "backend",
+          "source": "image_ref",
+          "imageRepo": "mse/mse-job",
+          "imageRef": "mse/mse-job:1.0.0",
+          "port": "48084",
+          "healthPath": "/actuator/health",
+          "entrypoint": false,
+          "composeTemplate": "  job:\n    image: {{UNIT_IMAGE}}\n    restart: unless-stopped\n    environment:\n      TZ: Asia/Shanghai\n    ports:\n      - \"48084:48084\"\n    depends_on:\n      - nacos\n",
+          "remark": "微服务单元（配置经 Nacos 配置中心，无本地外挂）"
+        },
+        {
+          "code": "oa",
+          "name": "oa",
+          "role": "backend",
+          "source": "image_ref",
+          "imageRepo": "mse/mse-oa",
+          "imageRef": "mse/mse-oa:1.0.0",
+          "port": "8090",
+          "healthPath": "/actuator/health",
+          "entrypoint": false,
+          "composeTemplate": "  oa:\n    image: {{UNIT_IMAGE}}\n    restart: unless-stopped\n    environment:\n      TZ: Asia/Shanghai\n    volumes:\n      - ./data/oa:/app/data\n    ports:\n      - \"8090:8090\"\n    depends_on:\n      - nacos\n",
+          "remark": "微服务单元（配置经 Nacos 配置中心，无本地外挂）"
+        },
+        {
+          "code": "mp",
+          "name": "mp",
+          "role": "backend",
+          "source": "image_ref",
+          "imageRepo": "mse/mse-mp",
+          "imageRef": "mse/mse-mp:1.0.0",
+          "port": "8091",
+          "healthPath": "/actuator/health",
+          "entrypoint": false,
+          "composeTemplate": "  mp:\n    image: {{UNIT_IMAGE}}\n    restart: unless-stopped\n    environment:\n      TZ: Asia/Shanghai\n    ports:\n      - \"8091:8091\"\n    depends_on:\n      - nacos\n",
+          "remark": "微服务单元（配置经 Nacos 配置中心，无本地外挂）"
+        },
+        {
+          "code": "open",
+          "name": "open",
+          "role": "backend",
+          "source": "image_ref",
+          "imageRepo": "mse/mse-open",
+          "imageRef": "mse/mse-open:1.0.0",
+          "port": "8092",
+          "healthPath": "/actuator/health",
+          "entrypoint": false,
+          "composeTemplate": "  open:\n    image: {{UNIT_IMAGE}}\n    restart: unless-stopped\n    environment:\n      TZ: Asia/Shanghai\n    ports:\n      - \"8092:8092\"\n    depends_on:\n      - nacos\n",
+          "remark": "微服务单元（配置经 Nacos 配置中心，无本地外挂）"
+        },
+        {
+          "code": "data",
+          "name": "data",
+          "role": "backend",
+          "source": "image_ref",
+          "imageRepo": "mse/mse-data",
+          "imageRef": "mse/mse-data:1.0.0",
+          "port": "8093",
+          "healthPath": "/actuator/health",
+          "entrypoint": false,
+          "composeTemplate": "  data:\n    image: {{UNIT_IMAGE}}\n    restart: unless-stopped\n    environment:\n      TZ: Asia/Shanghai\n    ports:\n      - \"8093:8093\"\n    depends_on:\n      - nacos\n",
+          "remark": "微服务单元（配置经 Nacos 配置中心，无本地外挂）"
+        },
+        {
+          "code": "ai",
+          "name": "ai",
+          "role": "backend",
+          "source": "image_ref",
+          "imageRepo": "mse/mse-ai",
+          "imageRef": "mse/mse-ai:1.0.0",
+          "port": "8094",
+          "healthPath": "/actuator/health",
+          "entrypoint": false,
+          "composeTemplate": "  ai:\n    image: {{UNIT_IMAGE}}\n    restart: unless-stopped\n    environment:\n      TZ: Asia/Shanghai\n    volumes:\n      - ./data/ai:/app/data\n    ports:\n      - \"8094:8094\"\n    depends_on:\n      - nacos\n",
+          "remark": "微服务单元（配置经 Nacos 配置中心，无本地外挂）"
+        },
+        {
+          "code": "fs",
+          "name": "fs",
+          "role": "backend",
+          "source": "image_ref",
+          "imageRepo": "mse/mse-fs",
+          "imageRef": "mse/mse-fs:1.0.0",
+          "port": "8095",
+          "healthPath": "/actuator/health",
+          "entrypoint": false,
+          "composeTemplate": "  fs:\n    image: {{UNIT_IMAGE}}\n    restart: unless-stopped\n    environment:\n      TZ: Asia/Shanghai\n    volumes:\n      - ./data/fs:/app/data\n    ports:\n      - \"8095:8095\"\n    depends_on:\n      - nacos\n",
+          "remark": "微服务单元（配置经 Nacos 配置中心，无本地外挂）"
+        },
+        {
+          "code": "search",
+          "name": "search",
+          "role": "backend",
+          "source": "image_ref",
+          "imageRepo": "mse/mse-search",
+          "imageRef": "mse/mse-search:1.0.0",
+          "port": "8096",
+          "healthPath": "/actuator/health",
+          "entrypoint": false,
+          "composeTemplate": "  search:\n    image: {{UNIT_IMAGE}}\n    restart: unless-stopped\n    environment:\n      TZ: Asia/Shanghai\n    ports:\n      - \"8096:8096\"\n    depends_on:\n      - nacos\n",
+          "remark": "微服务单元（配置经 Nacos 配置中心，无本地外挂）"
+        },
+        {
+          "code": "monitor",
+          "name": "monitor",
+          "role": "backend",
+          "source": "image_ref",
+          "imageRepo": "mse/mse-monitor",
+          "imageRef": "mse/mse-monitor:1.0.0",
+          "port": "8097",
+          "healthPath": "/actuator/health",
+          "entrypoint": false,
+          "composeTemplate": "  monitor:\n    image: {{UNIT_IMAGE}}\n    restart: unless-stopped\n    environment:\n      TZ: Asia/Shanghai\n    ports:\n      - \"8097:8097\"\n    depends_on:\n      - nacos\n",
+          "remark": "微服务单元（配置经 Nacos 配置中心，无本地外挂）"
+        },
+        {
+          "code": "mes",
+          "name": "mes",
+          "role": "backend",
+          "source": "image_ref",
+          "imageRepo": "mse/mse-mes",
+          "imageRef": "mse/mse-mes:1.0.0",
+          "port": "8098",
+          "healthPath": "/actuator/health",
+          "entrypoint": false,
+          "composeTemplate": "  mes:\n    image: {{UNIT_IMAGE}}\n    restart: unless-stopped\n    environment:\n      TZ: Asia/Shanghai\n    ports:\n      - \"8098:8098\"\n    depends_on:\n      - nacos\n",
+          "remark": "微服务单元（配置经 Nacos 配置中心，无本地外挂）"
+        },
+        {
+          "code": "im",
+          "name": "im",
+          "role": "backend",
+          "source": "image_ref",
+          "imageRepo": "mse/mse-im",
+          "imageRef": "mse/mse-im:1.0.0",
+          "port": "8099",
+          "healthPath": "/actuator/health",
+          "entrypoint": false,
+          "composeTemplate": "  im:\n    image: {{UNIT_IMAGE}}\n    restart: unless-stopped\n    environment:\n      TZ: Asia/Shanghai\n    ports:\n      - \"8099:8099\"\n    depends_on:\n      - nacos\n",
+          "remark": "微服务单元（配置经 Nacos 配置中心，无本地外挂）"
+        }
+      ],
+      "variables": [
+        {
+          "name": "TENANT_ID",
+          "label": "租户编号（附件 vars.env 自动预填）",
+          "when": "install",
+          "source": "input",
+          "value": "1"
+        },
+        {
+          "name": "TENANT_CODE",
+          "label": "租户编码（附件 vars.env 自动预填）",
+          "when": "install",
+          "source": "input",
+          "value": ""
+        },
+        {
+          "name": "TENANT_NAME",
+          "label": "租户名称（附件 vars.env 自动预填）",
+          "when": "install",
+          "source": "input",
+          "value": ""
+        },
+        {
+          "name": "LICENSE_PUBLIC_KEY",
+          "label": "许可公钥（附件 vars.env 自动预填）",
+          "when": "install",
+          "source": "input",
+          "value": ""
+        },
+        {
+          "name": "DB_HOST",
+          "label": "MySQL 地址（未勾 mysql 组件时填外部库）",
+          "when": "install",
+          "source": "input",
+          "value": ""
+        },
+        {
+          "name": "DB_PORT",
+          "label": "MySQL 端口",
+          "when": "install",
+          "source": "input",
+          "value": "3306"
+        },
+        {
+          "name": "DB_NAME",
+          "label": "租户共享库名",
+          "when": "install",
+          "source": "input",
+          "value": "mse_tenant"
+        },
+        {
+          "name": "PLATFORM_DB_NAME",
+          "label": "平台库名",
+          "when": "install",
+          "source": "input",
+          "value": "mse_platform"
+        },
+        {
+          "name": "DB_USER",
+          "label": "应用账号",
+          "when": "install",
+          "source": "input",
+          "value": "root"
+        },
+        {
+          "name": "DB_PASSWORD",
+          "label": "应用库密码（未勾 mysql 组件时填外部库密码）",
+          "when": "install",
+          "source": "input",
+          "value": ""
+        },
+        {
+          "name": "REDIS_HOST",
+          "label": "Redis 地址（未勾 redis 组件时填外部）",
+          "when": "install",
+          "source": "input",
+          "value": ""
+        },
+        {
+          "name": "REDIS_PORT",
+          "label": "Redis 端口",
+          "when": "install",
+          "source": "input",
+          "value": "6379"
+        }
+      ],
+      "defaultComponents": [
+        "nacos"
+      ],
+      "remark": "collect-kit collect --form micro 使用：pick 子集打包（基座五件套 + 勾选业务单元 + 可选 web），配置投递=Nacos 配置基线（nacos 组件 configCenter，安装期渲染发布）；组件勾选制：nacos 恒入包（形态基础设施），mysql/redis 及其余中间件勾选进包——未勾 mysql/redis 时经应用安装变量（DB_HOST/REDIS_HOST 等）接外部库；平台签发附件后经「出交付包」重打包成最终交付包"
+    }
+  ],
+  "components": [
+    {
+      "code": "mysql",
+      "name": "MySQL 8.4",
+      "category": "database",
+      "defaultChecked": true,
+      "images": [
+        "mysql:8.4"
+      ],
+      "composeServices": "  mysql:\n    image: mysql:8.4\n    restart: unless-stopped\n    environment:\n      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-mse@2026}\n      MYSQL_DATABASE: ${PLATFORM_DB_NAME:-mse_platform}\n      TZ: Asia/Shanghai\n    volumes:\n      - ./data/mysql:/var/lib/mysql\n      # 部署包 extras/ 内 db/schema.sql（表结构预置）：MySQL 首启（空数据目录）自动执行\n      - ./extras:/docker-entrypoint-initdb.d:ro\n    ports:\n      - \"3306:3306\"\n",
+      "endpoints": [
+        {
+          "placeholder": "DB_HOST",
+          "label": "数据库地址",
+          "service": "mysql",
+          "port": "3306",
+          "from": "host"
+        },
+        {
+          "placeholder": "DB_PORT",
+          "label": "数据库端口",
+          "service": "mysql",
+          "port": "3306",
+          "from": "port"
+        }
+      ],
+      "credentials": [
+        {
+          "placeholder": "MYSQL_ROOT_PASSWORD",
+          "label": "MySQL root 密码",
+          "env": "MYSQL_ROOT_PASSWORD",
+          "generate": "ask"
+        },
+        {
+          "placeholder": "DB_PASSWORD",
+          "label": "应用库密码",
+          "env": "DB_PASSWORD",
+          "generate": "ask"
+        },
+        {
+          "placeholder": "DB_NAME",
+          "label": "租户共享库名",
+          "env": "DB_NAME",
+          "generate": "const",
+          "value": "mse_tenant"
+        },
+        {
+          "placeholder": "DB_USER",
+          "label": "应用账号",
+          "env": "DB_USER",
+          "generate": "const",
+          "value": "root"
+        },
+        {
+          "placeholder": "PLATFORM_DB_NAME",
+          "label": "平台库名",
+          "env": "PLATFORM_DB_NAME",
+          "generate": "const",
+          "value": "mse_platform"
+        }
+      ],
+      "schema": {
+        "dir": "extras",
+        "image": "mysql:8.4",
+        "host": "DB_HOST",
+        "port": "DB_PORT",
+        "user": "DB_USER",
+        "password": "DB_PASSWORD",
+        "database": "DB_NAME"
+      },
+      "remark": "0.1.0 双库模型：平台库 {{PLATFORM_DB_NAME}}（控制面+定义目录）+ 租户共享库 {{DB_NAME}}（shared-main），两库均由应用首连 createDatabaseIfNotExist 自建、结构走 auto-migrate；extras 顶层 *.sql 预置链保留兼容（无 sql 时跳过）"
+    },
+    {
+      "code": "mysql-ha",
+      "name": "MySQL 8.4 主从（1主1从·GTID）",
+      "category": "database",
+      "defaultChecked": false,
+      "images": [
+        "mysql:8.4"
+      ],
+      "composeServices": "  mysql-primary:\n    image: mysql:8.4\n    restart: unless-stopped\n    environment:\n      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-mse@2026}\n      MYSQL_DATABASE: ${PLATFORM_DB_NAME:-mse_platform}\n      TZ: Asia/Shanghai\n    volumes:\n      - ./data/mysql-primary:/var/lib/mysql\n      - ./data/mysql-primary/conf.d:/etc/mysql/conf.d:ro\n      # extras/ SQL 预置仅挂主库（首启执行，进 binlog/GTID 后从库自动补齐）\n      - ./extras:/docker-entrypoint-initdb.d:ro\n    ports:\n      - \"3306:3306\"\n  mysql-replica:\n    image: mysql:8.4\n    restart: unless-stopped\n    environment:\n      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-mse@2026}\n      TZ: Asia/Shanghai\n    volumes:\n      - ./data/mysql-replica:/var/lib/mysql\n      - ./data/mysql-replica/conf.d:/etc/mysql/conf.d:ro\n    ports:\n      - \"3306:3306\"\n",
+      "endpoints": [
+        {
+          "placeholder": "DB_HOST",
+          "label": "数据库地址（主库）",
+          "service": "mysql-primary",
+          "port": "3306",
+          "from": "host"
+        },
+        {
+          "placeholder": "DB_PORT",
+          "label": "数据库端口",
+          "service": "mysql-primary",
+          "port": "3306",
+          "from": "port"
+        }
+      ],
+      "credentials": [
+        {
+          "placeholder": "MYSQL_ROOT_PASSWORD",
+          "label": "MySQL root 密码",
+          "env": "MYSQL_ROOT_PASSWORD",
+          "generate": "ask"
+        },
+        {
+          "placeholder": "DB_PASSWORD",
+          "label": "应用库密码",
+          "env": "DB_PASSWORD",
+          "generate": "ask"
+        },
+        {
+          "placeholder": "DB_NAME",
+          "label": "租户共享库名",
+          "env": "DB_NAME",
+          "generate": "const",
+          "value": "mse_tenant"
+        },
+        {
+          "placeholder": "DB_USER",
+          "label": "应用账号",
+          "env": "DB_USER",
+          "generate": "const",
+          "value": "root"
+        },
+        {
+          "placeholder": "PLATFORM_DB_NAME",
+          "label": "平台库名",
+          "env": "PLATFORM_DB_NAME",
+          "generate": "const",
+          "value": "mse_platform"
+        },
+        {
+          "placeholder": "MYSQL_REPL_USER",
+          "label": "复制账号",
+          "env": "MYSQL_REPL_USER",
+          "generate": "const",
+          "value": "repl"
+        },
+        {
+          "placeholder": "MYSQL_REPL_PASSWORD",
+          "label": "复制账号密码",
+          "env": "MYSQL_REPL_PASSWORD",
+          "generate": "random"
+        }
+      ],
+      "schema": {
+        "dir": "extras",
+        "image": "mysql:8.4",
+        "host": "DB_HOST",
+        "port": "DB_PORT",
+        "user": "DB_USER",
+        "password": "DB_PASSWORD",
+        "database": "DB_NAME"
+      },
+      "spreadHosts": true,
+      "roles": [
+        {
+          "name": "primary",
+          "services": ["mysql-primary"],
+          "vars": { "MYSQL_SERVER_ID": "1" },
+          "files": [
+            {
+              "path": "data/mysql-primary/conf.d/my.cnf",
+              "template": "[mysqld]\nserver-id={{MYSQL_SERVER_ID}}\ngtid_mode=ON\nenforce_gtid_consistency=ON\nlog-bin=binlog\nbinlog_format=ROW\n"
+            }
+          ],
+          "readiness": { "type": "tcp", "port": "3306" },
+          "init": [
+            {
+              "id": "repl-user",
+              "script": "mysql -uroot -p\"{{MYSQL_ROOT_PASSWORD}}\" -e \"CREATE USER IF NOT EXISTS '{{MYSQL_REPL_USER}}'@'%' IDENTIFIED WITH caching_sha2_password BY '{{MYSQL_REPL_PASSWORD}}'; GRANT REPLICATION REPLICA ON *.* TO '{{MYSQL_REPL_USER}}'@'%'; FLUSH PRIVILEGES;\""
+            }
+          ]
+        },
+        {
+          "name": "replica",
+          "services": ["mysql-replica"],
+          "vars": { "MYSQL_SERVER_ID": "1002" },
+          "files": [
+            {
+              "path": "data/mysql-replica/conf.d/my.cnf",
+              "template": "[mysqld]\nserver-id={{MYSQL_SERVER_ID}}\ngtid_mode=ON\nenforce_gtid_consistency=ON\nread_only=ON\nrelay-log=relay-bin\n"
+            }
+          ],
+          "readiness": {
+            "type": "exec",
+            "script": "mysql -uroot -p\"{{MYSQL_ROOT_PASSWORD}}\" -e 'SHOW REPLICA STATUS\\G' | grep -q 'Slave_IO_Running: Yes' && mysql -uroot -p\"{{MYSQL_ROOT_PASSWORD}}\" -e 'SHOW REPLICA STATUS\\G' | grep -q 'Slave_SQL_Running: Yes'"
+          },
+          "init": [
+            {
+              "id": "join",
+              "after": "primary",
+              "timeoutSec": 300,
+              "script": "mysql -uroot -p\"{{MYSQL_ROOT_PASSWORD}}\" -e \"STOP REPLICA;\" || true\nmysql -uroot -p\"{{MYSQL_ROOT_PASSWORD}}\" -e \"CHANGE REPLICATION SOURCE TO SOURCE_HOST='{{DB_HOST}}', SOURCE_PORT={{DB_PORT}}, SOURCE_USER='{{MYSQL_REPL_USER}}', SOURCE_PASSWORD='{{MYSQL_REPL_PASSWORD}}', SOURCE_AUTO_POSITION=1, GET_SOURCE_PUBLIC_KEY=1;\"\nmysql -uroot -p\"{{MYSQL_ROOT_PASSWORD}}\" -e \"START REPLICA;\""
+            }
+          ]
+        }
+      ],
+      "remark": "主从（format:4 角色化组件）：主从强制分机（spreadHosts）、GTID 自动搭复制（主库建号→从库 CHANGE REPLICATION SOURCE→双线程就绪探针）；与 mysql 单机组件互斥（DB_HOST/凭据同源）；仅 console 编排安装（install.sh 不支持），进包自动升 format:4。推荐改用 console 组态向导（编排页组件「组态」按钮，单 mysql 组件包直接展开主从，无需勾本组件重打包）"
+    },
+    {
+      "code": "redis",
+      "name": "Redis 7",
+      "category": "cache",
+      "defaultChecked": true,
+      "images": [
+        "redis:7-alpine"
+      ],
+      "composeServices": "  redis:\n    image: redis:7-alpine\n    restart: unless-stopped\n    volumes:\n      - ./data/redis:/data\n    ports:\n      - \"6379:6379\"\n",
+      "endpoints": [
+        {
+          "placeholder": "REDIS_HOST",
+          "label": "缓存地址",
+          "service": "redis",
+          "port": "6379",
+          "from": "host"
+        },
+        {
+          "placeholder": "REDIS_PORT",
+          "label": "缓存端口",
+          "service": "redis",
+          "port": "6379",
+          "from": "port"
+        }
+      ],
+      "credentials": [
+        {
+          "placeholder": "REDIS_PASSWORD",
+          "label": "缓存密码",
+          "env": "REDIS_PASSWORD",
+          "generate": "const",
+          "value": ""
+        }
+      ]
+    },
+    {
+      "code": "rocketmq",
+      "name": "RocketMQ 消息队列（namesrv+broker）",
+      "category": "middleware",
+      "images": [
+        "apache/rocketmq:5.3.1"
+      ],
+      "composeServices": "  rocketmq-namesrv:\n    image: apache/rocketmq:5.3.1\n    restart: unless-stopped\n    command: sh mqnamesrv\n    ports:\n      - \"9876:9876\"\n  rocketmq-broker:\n    image: apache/rocketmq:5.3.1\n    restart: unless-stopped\n    command: sh mqbroker -n rocketmq-namesrv:9876 -c /home/rocketmq/conf/broker.conf\n    ports:\n      - \"10911:10911\"\n      - \"10909:10909\"\n    volumes:\n      - ./deploy/rocketmq/broker.conf:/home/rocketmq/conf/broker.conf:ro\n      - ./data/rocketmq-broker:/home/rocketmq/store\n    depends_on:\n      - rocketmq-namesrv\n",
+      "files": [
+        {
+          "path": "deploy/rocketmq/broker.conf",
+          "content": "brokerClusterName = DefaultCluster\nbrokerName = broker-a\nbrokerId = 0\ndeleteWhen = 04\nfileReservedTime = 48\nbrokerRole = ASYNC_MASTER\nflushDiskType = ASYNC_FLUSH\nlistenPort = 10911\n"
+        }
+      ],
+      "appConfig": {
+        "rocketmq": "  name-server: {{MQ_NAME_SERVER}}\n  producer:\n    group: mse-producer\n    send-message-timeout: 5000\n"
+      },
+      "endpoints": [
+        {
+          "placeholder": "MQ_NAME_SERVER",
+          "label": "消息队列 nameserver 地址",
+          "service": "rocketmq-namesrv",
+          "port": "9876",
+          "from": "url",
+          "scheme": ""
+        }
+      ],
+      "remark": "聚合工程需含 mq-starter（collect-kit 勾选 rocketmq 时自动加）"
+    },
+    {
+      "code": "elasticsearch",
+      "name": "Elasticsearch 9 搜索（smartcn）",
+      "category": "middleware",
+      "images": [
+        "mse/elasticsearch:9.2.8-smartcn"
+      ],
+      "composeServices": "  elasticsearch:\n    image: mse/elasticsearch:9.2.8-smartcn\n    restart: unless-stopped\n    environment:\n      discovery.type: single-node\n      xpack.security.enabled: \"false\"\n      ES_JAVA_OPTS: -Xms512m -Xmx512m\n      TZ: Asia/Shanghai\n    ports:\n      - \"9200:9200\"\n    volumes:\n      - ./data/elasticsearch:/usr/share/elasticsearch/data\n",
+      "appConfig": {
+        "spring": "  elasticsearch:\n    uris: {{ES_URIS}}\n"
+      },
+      "endpoints": [
+        {
+          "placeholder": "ES_URIS",
+          "label": "搜索服务地址",
+          "service": "elasticsearch",
+          "port": "9200",
+          "from": "url",
+          "scheme": "http"
+        }
+      ],
+      "remark": "镜像为本地构建（smartcn 预装）：先在本机构建或从 collect-kit 导出 tar 后上传镜像仓"
+    },
+    {
+      "code": "rustfs",
+      "name": "RustFS S3 对象存储（mse-fs）",
+      "category": "middleware",
+      "images": [
+        "rustfs/rustfs:1.0.0-alpha.83-glibc"
+      ],
+      "composeServices": "  rustfs:\n    image: rustfs/rustfs:1.0.0-alpha.83-glibc\n    restart: unless-stopped\n    ports:\n      - \"9000:9000\"\n      - \"9001:9001\"\n    environment:\n      RUSTFS_VOLUMES: /data\n      RUSTFS_ADDRESS: 0.0.0.0:9000\n      RUSTFS_CONSOLE_ENABLE: \"true\"\n      RUSTFS_CONSOLE_ADDRESS: 0.0.0.0:9001\n      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-rustfsadmin}\n      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}\n    volumes:\n      - ./data/rustfs:/data\n",
+      "appConfig": {
+        "mse": "  fs:\n    storage:\n      type: rustfs\n      rustfs:\n        endpoint: {{S3_ENDPOINT}}\n        access-key: {{S3_ACCESS_KEY}}\n        secret-key: {{S3_SECRET_KEY}}\n        bucket: mse-fs\n        region: us-east-1\n        path-style-access: true\n"
+      },
+      "endpoints": [
+        {
+          "placeholder": "S3_ENDPOINT",
+          "label": "对象存储地址",
+          "service": "rustfs",
+          "port": "9000",
+          "from": "url",
+          "scheme": "http"
+        }
+      ],
+      "credentials": [
+        {
+          "placeholder": "S3_ACCESS_KEY",
+          "label": "对象存储访问密钥",
+          "env": "RUSTFS_ACCESS_KEY",
+          "generate": "const",
+          "value": "rustfsadmin"
+        },
+        {
+          "placeholder": "S3_SECRET_KEY",
+          "label": "对象存储私密密钥",
+          "env": "RUSTFS_SECRET_KEY",
+          "generate": "const",
+          "value": "rustfsadmin"
+        }
+      ]
+    },
+    {
+      "code": "milvus",
+      "name": "Milvus 向量库三件套（ai 知识库）",
+      "category": "middleware",
+      "images": [
+        "quay.io/coreos/etcd:v3.5.14",
+        "minio/minio:RELEASE.2024-05-28T17-19-04Z",
+        "milvusdb/milvus:v2.6.0"
+      ],
+      "composeServices": "  milvus-etcd:\n    image: quay.io/coreos/etcd:v3.5.14\n    restart: unless-stopped\n    environment:\n      - ETCD_AUTO_COMPACTION_MODE=revision\n      - ETCD_AUTO_COMPACTION_RETENTION=1000\n      - ETCD_QUOTA_BACKEND_BYTES=4294967296\n    command: etcd -advertise-client-urls=http://milvus-etcd:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd\n    volumes:\n      - ./data/milvus-etcd:/etcd\n  milvus-minio:\n    image: minio/minio:RELEASE.2024-05-28T17-19-04Z\n    restart: unless-stopped\n    environment:\n      MINIO_ACCESS_KEY: minioadmin\n      MINIO_SECRET_KEY: minioadmin\n    command: minio server /minio_data\n    volumes:\n      - ./data/milvus-minio:/minio_data\n  milvus:\n    image: milvusdb/milvus:v2.6.0\n    restart: unless-stopped\n    command: [\"milvus\", \"run\", \"standalone\"]\n    environment:\n      ETCD_ENDPOINTS: milvus-etcd:2379\n      MINIO_ADDRESS: milvus-minio:9000\n    ports:\n      - \"19530:19530\"\n      - \"9091:9091\"\n    depends_on:\n      - milvus-etcd\n      - milvus-minio\n    volumes:\n      - ./data/milvus:/var/lib/milvus\n",
+      "appConfig": {
+        "mse": "  ai:\n    milvus-enabled: true\n    milvus-host: {{MILVUS_HOST}}\n    milvus-port: {{MILVUS_PORT}}\n"
+      },
+      "endpoints": [
+        {
+          "placeholder": "MILVUS_HOST",
+          "label": "向量库地址",
+          "service": "milvus",
+          "port": "19530",
+          "from": "host"
+        },
+        {
+          "placeholder": "MILVUS_PORT",
+          "label": "向量库端口",
+          "service": "milvus",
+          "port": "19530",
+          "from": "port"
+        }
+      ]
+    },
+    {
+      "code": "openim",
+      "name": "OpenIM 即时通讯全家桶（七容器）",
+      "category": "middleware",
+      "images": [
+        "mongo:7.0.28",
+        "redis:7-alpine",
+        "bitnamilegacy/kafka:3.5.1",
+        "bitnamilegacy/etcd:3.5.13",
+        "minio/minio:RELEASE.2024-05-28T17-19-04Z",
+        "openim/openim-server:v3.8.3-patch.15",
+        "livekit/livekit-server:latest"
+      ],
+      "composeServices": "  im-mongo:\n    image: mongo:7.0.28\n    restart: unless-stopped\n    command: >\n      bash -c '\n      docker-entrypoint.sh mongod --wiredTigerCacheSizeGB $$wiredTigerCacheSizeGB --auth &\n      until mongosh -u $$MONGO_INITDB_ROOT_USERNAME -p $$MONGO_INITDB_ROOT_PASSWORD --authenticationDatabase admin --eval \"db.runCommand({ ping: 1 })\" &>/dev/null; do\n        echo \"Waiting for MongoDB to start...\"\n        sleep 1\n      done &&\n      mongosh -u $$MONGO_INITDB_ROOT_USERNAME -p $$MONGO_INITDB_ROOT_PASSWORD --authenticationDatabase admin --eval \"\n      db = db.getSiblingDB(\\\"$$MONGO_INITDB_DATABASE\\\");\n      if (!db.getUser(\\\"$$MONGO_OPENIM_USERNAME\\\")) {\n        db.createUser({\n          user: \\\"$$MONGO_OPENIM_USERNAME\\\",\n          pwd: \\\"$$MONGO_OPENIM_PASSWORD\\\",\n          roles: [{role: \\\"readWrite\\\", db: \\\"$$MONGO_INITDB_DATABASE\\\"}]\n        });\n        print(\\\"User created successfully\\\");\n      } else {\n        print(\\\"User already exists\\\");\n      }\n      \" &&\n      tail -f /dev/null\n      '\n    volumes:\n      - ./data/im-mongo:/data/db\n    environment:\n      - TZ=Asia/Shanghai\n      - wiredTigerCacheSizeGB=1\n      - MONGO_INITDB_ROOT_USERNAME=root\n      - MONGO_INITDB_ROOT_PASSWORD=openIM123\n      - MONGO_INITDB_DATABASE=openim_v3\n      - MONGO_OPENIM_USERNAME=openIM\n      - MONGO_OPENIM_PASSWORD=openIM123\n  im-redis:\n    image: redis:7-alpine\n    restart: unless-stopped\n    volumes:\n      - ./data/im-redis:/data\n    environment:\n      TZ: Asia/Shanghai\n    sysctls:\n      net.core.somaxconn: 1024\n    command: [\"redis-server\", \"--requirepass\", \"openIM123\", \"--appendonly\", \"yes\"]\n  im-etcd:\n    image: bitnamilegacy/etcd:3.5.13\n    restart: unless-stopped\n    environment:\n      - ETCD_NAME=s1\n      - ETCD_DATA_DIR=/etcd-data\n      - ETCD_LISTEN_CLIENT_URLS=http://0.0.0.0:2379\n      - ETCD_ADVERTISE_CLIENT_URLS=http://0.0.0.0:2379\n      - ETCD_LISTEN_PEER_URLS=http://0.0.0.0:2380\n      - ETCD_INITIAL_ADVERTISE_PEER_URLS=http://0.0.0.0:2380\n      - ETCD_INITIAL_CLUSTER=s1=http://0.0.0.0:2380\n      - ETCD_INITIAL_CLUSTER_TOKEN=tkn\n      - ETCD_INITIAL_CLUSTER_STATE=new\n      - ALLOW_NONE_AUTHENTICATION=yes\n    volumes:\n      - ./data/im-etcd:/etcd-data\n    command: >\n      /bin/sh -c '\n        etcd &\n        export ETCDCTL_API=3\n        until etcdctl --endpoints=http://127.0.0.1:2379 endpoint health &>/dev/null; do\n          echo \"Waiting for ETCD to start...\"\n          sleep 1\n        done\n        tail -f /dev/null\n      '\n  im-kafka:\n    image: bitnamilegacy/kafka:3.5.1\n    restart: unless-stopped\n    user: root\n    volumes:\n      - ./data/im-kafka:/bitnami/kafka\n    environment:\n      TZ: Asia/Shanghai\n      KAFKA_CFG_NODE_ID: 0\n      KAFKA_CFG_PROCESS_ROLES: controller,broker\n      KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: 0@im-kafka:9093\n      KAFKA_CFG_CONTROLLER_LISTENER_NAMES: CONTROLLER\n      KAFKA_NUM_PARTITIONS: 8\n      KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE: \"true\"\n      KAFKA_CFG_LISTENERS: \"INTERNAL://:9092,CONTROLLER://:9093,EXTERNAL://:9094\"\n      KAFKA_CFG_ADVERTISED_LISTENERS: \"INTERNAL://im-kafka:9092,EXTERNAL://im-kafka:9094\"\n      KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: \"CONTROLLER:PLAINTEXT,EXTERNAL:PLAINTEXT,INTERNAL:PLAINTEXT\"\n      KAFKA_CFG_INTER_BROKER_LISTENER_NAME: \"INTERNAL\"\n  im-minio:\n    image: minio/minio:RELEASE.2024-05-28T17-19-04Z\n    restart: unless-stopped\n    ports:\n      - \"10005:9000\"\n      - \"10004:9090\"\n    volumes:\n      - ./data/im-minio:/data\n    environment:\n      TZ: Asia/Shanghai\n      MINIO_ROOT_USER: root\n      MINIO_ROOT_PASSWORD: openIM123\n    command: minio server /data --console-address ':9090'\n  im-livekit:\n    image: livekit/livekit-server:latest\n    restart: unless-stopped\n    command: >\n      --bind 0.0.0.0\n      --node-ip 127.0.0.1\n      --rtc-tcp-port 7881\n      --rtc-port-range-start 7882\n      --rtc-port-range-end 7889\n      --keys ${LIVEKIT_API_KEY:-mse-devkey}:${LIVEKIT_API_SECRET:-mse-im-rtc-secret-change-me}\n    ports:\n      - \"7880:7880\"\n      - \"7881:7881\"\n      - \"7882-7889:7882-7889/udp\"\n  im-openim-server:\n    image: openim/openim-server:v3.8.3-patch.15\n    restart: unless-stopped\n    init: true\n    volumes:\n      - ./deploy/openim/config/openim-rpc-auth.yml:/openim-server/config/openim-rpc-auth.yml\n      - ./deploy/openim/config/webhooks.yml:/openim-server/config/webhooks.yml\n    ports:\n      - \"10001:10001\"\n      - \"10002:10002\"\n    healthcheck:\n      test: [\"CMD\", \"sh\", \"-c\", \"mage check\"]\n      interval: 5s\n      timeout: 60s\n      retries: 10\n    environment:\n      - IMENV_MONGODB_ADDRESS=im-mongo:27017\n      - IMENV_MONGODB_USERNAME=openIM\n      - IMENV_MONGODB_PASSWORD=openIM123\n      - IMENV_KAFKA_ADDRESS=im-kafka:9094\n      - IMENV_DISCOVERY_ETCD_ADDRESS=im-etcd:2379\n      - IMENV_REDIS_ADDRESS=im-redis:6379\n      - IMENV_REDIS_PASSWORD=openIM123\n      - IMENV_MINIO_INTERNALADDRESS=im-minio:9000\n      - IMENV_MINIO_EXTERNALADDRESS=http://127.0.0.1:10005\n      - IMENV_MINIO_ACCESSKEYID=root\n      - IMENV_MINIO_SECRETACCESSKEY=openIM123\n      - IMENV_SHARE_SECRET=${OPENIM_SECRET:-mse-im-poc-secret-change-me}\n      - IMENV_LOG_ISSTDOUT=true\n      - IMENV_LOG_REMAINLOGLEVEL=3\n    depends_on:\n      - im-mongo\n      - im-redis\n      - im-etcd\n      - im-kafka\n      - im-minio\n",
+      "files": [
+        {
+          "path": "deploy/openim/config/openim-rpc-auth.yml",
+          "content": "rpc:\n  registerIP:\n  listenIP: 0.0.0.0\n  autoSetPorts: true\n  ports: [ 10200 ]\nprometheus:\n  enable: true\n  ports: [ 12200 ]\ntokenPolicy:\n  expire: 7\n"
+        },
+        {
+          "path": "deploy/openim/config/webhooks.yml",
+          "content": "# OpenIM webhook 回调（默认全关）：启用需把 url 换成应用回调地址\nurl: http://app:8080\nbeforeSendSingleMsg:\n  enable: false\nafterSendSingleMsg:\n  enable: false\nbeforeSendGroupMsg:\n  enable: false\nafterSendGroupMsg:\n  enable: false\nbeforeMsgModify:\n  enable: false\nafterUserOnline:\n  enable: false\nafterUserOffline:\n  enable: false\n"
+        }
+      ],
+      "appConfig": {
+        "mse": "  im:\n    enabled: true\n    server:\n      api-url: {{IM_API_URL}}\n      ws-url: {{IM_WS_URL}}\n      secret: {{IM_SECRET}}\n      admin-user-id: imAdmin\n    livekit:\n      enabled: true\n      url: {{IM_LIVEKIT_URL}}\n      api-key: {{IM_LIVEKIT_API_KEY}}\n      api-secret: {{IM_LIVEKIT_API_SECRET}}\n"
+      },
+      "endpoints": [
+        {
+          "placeholder": "IM_API_URL",
+          "label": "IM API 地址",
+          "service": "im-openim-server",
+          "port": "10002",
+          "from": "url",
+          "scheme": "http"
+        }
+      ],
+      "credentials": [
+        {
+          "placeholder": "IM_SECRET",
+          "label": "IM 共享密钥",
+          "env": "OPENIM_SECRET",
+          "generate": "random"
+        },
+        {
+          "placeholder": "IM_LIVEKIT_API_KEY",
+          "label": "LiveKit API Key",
+          "env": "LIVEKIT_API_KEY",
+          "generate": "random"
+        },
+        {
+          "placeholder": "IM_LIVEKIT_API_SECRET",
+          "label": "LiveKit API Secret",
+          "env": "LIVEKIT_API_SECRET",
+          "generate": "random"
+        },
+        {
+          "placeholder": "IM_WS_URL",
+          "label": "IM WebSocket 地址（浏览器侧）",
+          "generate": "const",
+          "value": "ws://127.0.0.1:10001"
+        },
+        {
+          "placeholder": "IM_LIVEKIT_URL",
+          "label": "LiveKit 地址（浏览器侧）",
+          "generate": "const",
+          "value": "ws://127.0.0.1:7880"
+        }
+      ],
+      "remark": "ws/livekit 为浏览器侧坐标（宿主回环），生产按需反代后改 const 值"
+    },
+    {
+      "code": "nacos",
+      "name": "Nacos 3 配置中心+注册中心",
+      "category": "middleware",
+      "images": [
+        "nacos/nacos-server:v3.0.0"
+      ],
+      "composeServices": "  nacos:\n    image: nacos/nacos-server:v3.0.0\n    restart: unless-stopped\n    environment:\n      MODE: standalone\n      NACOS_AUTH_ENABLED: \"false\"\n      # v3 启动强校验要求提供（即便 auth 关闭）\n      NACOS_AUTH_TOKEN: \"MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDEyMw==\"\n      NACOS_AUTH_IDENTITY_KEY: ${NACOS_IDENTITY_KEY:-serverIdentity}\n      NACOS_AUTH_IDENTITY_VALUE: ${NACOS_IDENTITY_VALUE:-security}\n      JVM_XMS: 256m\n      JVM_XMX: 512m\n      TZ: Asia/Shanghai\n    ports:\n      - \"8848:8848\"\n      - \"9848:9848\"\n      # v3 控制台独立端口；宿主 8080 常与业务冲突，沿用 18080\n      - \"18080:8080\"\n    volumes:\n      - ./data/nacos:/home/nacos/data\n    healthcheck:\n      test: [ \"CMD\", \"curl\", \"-fs\", \"http://localhost:8848/nacos/v3/admin/core/state\" ]\n      interval: 10s\n      timeout: 5s\n      retries: 30\n",
+      "endpoints": [
+        {
+          "placeholder": "NACOS_ADDR",
+          "label": "配置/注册中心地址",
+          "service": "nacos",
+          "port": "8848",
+          "from": "url",
+          "scheme": "http"
+        }
+      ],
+      "credentials": [
+        {
+          "placeholder": "NACOS_IDENTITY_KEY",
+          "label": "serverIdentity 头名",
+          "generate": "const",
+          "value": "serverIdentity"
+        },
+        {
+          "placeholder": "NACOS_IDENTITY_VALUE",
+          "label": "serverIdentity 凭据值",
+          "generate": "const",
+          "value": "security"
+        }
+      ],
+      "remark": "注册中心 + 交付配置基线载体：files 携带 变量占位符化 Data ID 基线（源头=仓库 nacos/config 留档，dm/kingbase profile 不随交付），打包经 configCenterInclude 按选中业务裁剪 configs；安装期 console 渲染 DB/Redis/Nacos 端点等后经插件链 plan→gate→apply 发布进 Nacos，各服务用 boot 内置瘦 application.yaml（spring.config.import）拉取。基线只允许组件端点/凭据与 install 变量占位符；可选中间件（ES/Milvus 等）端点不在基线渲染——经 Nacos 控制台或环境变量按需调整",
+      "files": [
+        {
+          "path": "deploy/nacos/config/mse-micro-common.yaml",
+          "content": "# 交付基线（微服务套件·全服务共享）：安装时由 console 渲染变量占位符后经配置中心插件链发布进 Nacos。\n# 源头留档：mse-framework/docker/nacos/config/mse-micro-common.yaml + 交付 overlay（许可公钥）。\nspring:\n  threads:\n    virtual:\n      enabled: false\n  data:\n    redis:\n      host: {{REDIS_HOST}}\n      port: {{REDIS_PORT}}\n      database: 0\nsa-token:\n  token-name: Authorization\n  timeout: 2592000\n  active-timeout: -1\n  is-concurrent: true\n  is-share: false\n  token-style: uuid\n  is-log: false\n  is-read-cookie: false\n  is-read-header: true\nmse:\n  tenant:\n    dynamic-ds:\n      encrypt-key: mse-ds-dev-key-2026\n  actuator:\n    auth:\n      token: \"\"\n  # 交付 overlay：平台许可公钥（mse-system 登录门控验签用；其余服务无此属性忽略）\n  license:\n    public-key: \"{{LICENSE_PUBLIC_KEY}}\"\nlogging:\n  level:\n    vip.mseapp: info\n  pattern:\n    correlation: \"[trace:%X{traceId:-} tenant:%X{tenantId:-} user:%X{userId:-} ds:%X{ds:-}] \"\n"
+        },
+        {
+          "path": "deploy/nacos/config/mse-micro-db.yaml",
+          "content": "# 交付基线（基座服务版数据源：master=平台库）。源头：mse-framework/docker/nacos/config/mse-micro-db.yaml。\nspring:\n  datasource:\n    dynamic:\n      seata: true\n      primary: master\n      strict: false\n      datasource:\n        master:\n          driver-class-name: com.mysql.cj.jdbc.Driver\n          url: jdbc:mysql://{{DB_HOST}}:{{DB_PORT}}/{{PLATFORM_DB_NAME}}?createDatabaseIfNotExist=true&useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useInformationSchema=true&nullCatalogMeansCurrent=true\n          username: {{DB_USER}}\n          password: \"{{DB_PASSWORD}}\"\nmybatis-plus:\n  global-config:\n    banner: false\n    db-config:\n      id-type: assign_id\n      logic-delete-field: deleted\n      logic-delete-value: 1\n      logic-not-delete-value: 0\n  configuration:\n    map-underscore-to-camel-case: true\n\nseata:\n  # 交付基线：默认关停（Seata 服务端不在交付套件内；置 true 需自行部署 seata-server 并改 grouplist）\n  enabled: false\n  enable-auto-data-source-proxy: false\n  application-id: ${spring.application.name}\n  tx-service-group: mse-tx-group\n  service:\n    vgroup-mapping:\n      mse-tx-group: default\n    grouplist:\n      default: localhost:8091\n  config:\n    type: file\n  registry:\n    type: file\n"
+        },
+        {
+          "path": "deploy/nacos/config/mse-micro-db-biz.yaml",
+          "content": "# 交付基线（业务服务版数据源：primary=platform 平台库 + shared-main 租户共享库自 declare）。\n# 源头：mse-framework/docker/nacos/config/mse-micro-db-biz.yaml（dm/kingbase profile 不随交付）。\nspring:\n  datasource:\n    dynamic:\n      seata: true\n      primary: platform\n      strict: false\n      hikari:\n        maximum-pool-size: 5\n        minimum-idle: 1\n        idle-timeout: 300000\n        max-lifetime: 1800000\n        connection-timeout: 10000\n      datasource:\n        platform:\n          driver-class-name: com.mysql.cj.jdbc.Driver\n          url: jdbc:mysql://{{DB_HOST}}:{{DB_PORT}}/{{PLATFORM_DB_NAME}}?createDatabaseIfNotExist=true&useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useInformationSchema=true&nullCatalogMeansCurrent=true\n          username: {{DB_USER}}\n          password: \"{{DB_PASSWORD}}\"\nmybatis-plus:\n  global-config:\n    banner: false\n    db-config:\n      id-type: assign_id\n      logic-delete-field: deleted\n      logic-delete-value: 1\n      logic-not-delete-value: 0\n  configuration:\n    map-underscore-to-camel-case: true\n\nseata:\n  # 交付基线：默认关停（Seata 服务端不在交付套件内；置 true 需自行部署 seata-server 并改 grouplist）\n  enabled: false\n  enable-auto-data-source-proxy: false\n  application-id: ${spring.application.name}\n  tx-service-group: mse-tx-group\n  service:\n    vgroup-mapping:\n      mse-tx-group: default\n    grouplist:\n      default: localhost:8091\n  config:\n    type: file\n  registry:\n    type: file\n"
+        },
+        {
+          "path": "deploy/nacos/config/mse-micro-dubbo.yaml",
+          "content": "# 交付基线（Dubbo RPC/注册中心）。源头：mse-framework/docker/nacos/config/mse-micro-dubbo.yaml。\nspring:\n  application:\n    service-discovery:\n      migration: FORCE_INTERFACE\ndubbo:\n  application:\n    name: ${spring.application.name}\n    qos-enable: false\n  registry:\n    address: nacos://{{NACOS_ADDR}}\n    register-mode: interface\n  protocol:\n    name: tri\n    port: -1\n    payload: 33554432\nmse:\n  rpc:\n    mode: dubbo\n  tenant:\n    enabled: true\n"
+        },
+        {
+          "path": "deploy/nacos/config/mse-gateway.yaml",
+          "content": "# 交付基线（mse-gateway 专属）。源头：mse-framework/docker/nacos/config/mse-gateway.yaml。\nserver:\n  port: 48080\nspring:\n  cloud:\n    gateway:\n      server:\n        webflux:\n          routes:\n            - id: mse-job\n              uri: lb://mse-job\n              predicates:\n                - Path=/job/**\n            - id: mse-auth\n              uri: lb://mse-auth\n              predicates:\n                - Path=/auth/**\n            - id: mse-system\n              uri: lb://mse-system\n              predicates:\n                - Path=/system/**\n            - id: mse-platform\n              uri: lb://mse-platform\n              predicates:\n                - Path=/tenant/**,/tenant-package/**\n            - id: mse-open\n              uri: lb://mse-open\n              predicates:\n                - Path=/open/**,/openapp/**\n            - id: mse-oa\n              uri: lb://mse-oa\n              predicates:\n                - Path=/oa/**\n            - id: mse-mp\n              uri: lb://mse-mp\n              predicates:\n                - Path=/mp/**\n            - id: mse-data\n              uri: lb://mse-data\n              predicates:\n                - Path=/data/**,/openapi/data/**\n            - id: mse-ai\n              uri: lb://mse-ai\n              predicates:\n                - Path=/ai/**,/openapi/ai/**\n            - id: mse-fs\n              uri: lb://mse-fs\n              predicates:\n                - Path=/fs/**\n            - id: mse-search\n              uri: lb://mse-search\n              predicates:\n                - Path=/search/**\n            - id: mse-monitor\n              uri: lb://mse-monitor\n              predicates:\n                - Path=/monitor/**\n            - id: mse-mes\n              uri: lb://mse-mes\n              predicates:\n                - Path=/mes/**\n            - id: mse-im\n              uri: lb://mse-im\n              predicates:\n                - Path=/im/**\nmse:\n  gateway:\n    ignore-urls:\n      - /auth/login\n      - /auth/platform/login\n      - /auth/tenant/resolve\n      - /auth/domain/config\n      - /auth/captcha/**\n      - /auth/2fa/**\n      - /auth/login/2fa\n      - /tenant/domain-config/asset/**\n      - /system/tenant-branding/asset/**\n      - /system/profile/asset/**\n      - /ai/agent/asset/*\n      - /fs/asset/**\n      - /tenant/deliver/download/**\n      - /actuator/**\n      - /error\n      - /open/oauth/token\n      - /open/api/**\n      - /mp/callback/**\n      - /openapi/data/**\n      - /openapi/ai/**\n      - /im/sso/exchange\n      - /im/oauth/token\n      - /im/oauth/userinfo\n      - /im/workbench/asset/*\n      - /im/client/asset/*\n      - /im/callback/**\nlogging:\n  level:\n    vip.mseapp: info\n"
+        },
+        {
+          "path": "deploy/nacos/config/mse-system.yaml",
+          "content": "# 交付基线（mse-system 专属：primary=platform + shared-main 租户共享库两库自建）。\n# 源头：mse-framework/docker/nacos/config/mse-system.yaml（dm/kingbase profile 不随交付）。\nserver:\n  port: 48081\nspring:\n  datasource:\n    dynamic:\n      seata: true\n      primary: platform\n      strict: false\n      hikari:\n        maximum-pool-size: 5\n        minimum-idle: 1\n        idle-timeout: 300000\n        max-lifetime: 1800000\n        connection-timeout: 10000\n      datasource:\n        platform:\n          driver-class-name: com.mysql.cj.jdbc.Driver\n          url: jdbc:mysql://{{DB_HOST}}:{{DB_PORT}}/{{PLATFORM_DB_NAME}}?createDatabaseIfNotExist=true&useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useInformationSchema=true&nullCatalogMeansCurrent=true\n          username: {{DB_USER}}\n          password: \"{{DB_PASSWORD}}\"\nmse:\n  tenant:\n    shared-main:\n      url: jdbc:mysql://{{DB_HOST}}:{{DB_PORT}}/{{DB_NAME}}?createDatabaseIfNotExist=true&useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useInformationSchema=true&nullCatalogMeansCurrent=true\n      username: {{DB_USER}}\n      password: \"{{DB_PASSWORD}}\"\n      db-type: mysql\n    schema:\n      shared-main-eager-init: true\n"
+        },
+        {
+          "path": "deploy/nacos/config/mse-platform.yaml",
+          "content": "# 交付基线（mse-platform 专属）。源头：mse-framework/docker/nacos/config/mse-platform.yaml。\nserver:\n  port: 48082\nspring:\n  servlet:\n    multipart:\n      max-file-size: 20GB\n      max-request-size: 20GB\n"
+        },
+        {
+          "path": "deploy/nacos/config/mse-auth.yaml",
+          "content": "# 交付基线（mse-auth 专属：纯 Dubbo 消费端不连数据库）。源头：mse-framework/docker/nacos/config/mse-auth.yaml。\nserver:\n  port: 48083\nspring:\n  autoconfigure:\n    exclude:\n      - org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration\n  datasource:\n    dynamic:\n      enabled: false\n"
+        },
+        {
+          "path": "deploy/nacos/config/mse-job.yaml",
+          "content": "# 交付基线（mse-job 专属）。源头：mse-framework/docker/nacos/config/mse-job.yaml。\nserver:\n  port: 48084\nmse:\n  job:\n    dispatch-interval: 5s\n    dispatch-initial-delay: 45s\n    min-redispatch-gap: 30s\n"
+        },
+        {
+          "path": "deploy/nacos/config/mse-oa.yaml",
+          "content": "# 交付基线（mse-oa 专属）。源头：mse-modules/mse-oa/docker/nacos/config/mse-oa.yaml。\nserver:\n  port: 8090\nmanagement:\n  endpoints:\n    web:\n      exposure:\n        include: health,info,metrics,slowsql\nspring:\n  datasource:\n    dynamic:\n      seata: false\n  servlet:\n    multipart:\n      max-file-size: 20MB\n      max-request-size: 22MB\nflowable:\n  database-schema-update: true\n  async-executor-activate: true\n  eventregistry:\n    enabled: false\nmse:\n  oa:\n    storage-mode: auto\n    file-dir: ./data/oa-files\n    ai:\n      assist-agent: oa_approve_assist\n      process-agent: oa_process_designer\n      fill-agent: oa_form_fill\n      design-timeout-millis: 300000\n"
+        },
+        {
+          "path": "deploy/nacos/config/mse-mp.yaml",
+          "content": "# 交付基线（mse-mp 专属）。源头：mse-modules/mse-mp/docker/nacos/config/mse-mp.yaml。\nserver:\n  port: 8091\nmanagement:\n  endpoints:\n    web:\n      exposure:\n        include: health,info,metrics,slowsql\nspring:\n  datasource:\n    dynamic:\n      seata: false\nmse:\n  mp:\n    crypt-key: mse-mp-default-crypt-key-please-change\n    api-base: https://api.weixin.qq.com\n    http-timeout-ms: 3000\n"
+        },
+        {
+          "path": "deploy/nacos/config/mse-open.yaml",
+          "content": "# 交付基线（mse-open 专属）。源头：mse-modules/mse-open/docker/nacos/config/mse-open.yaml。\nserver:\n  port: 8092\nmanagement:\n  endpoints:\n    web:\n      exposure:\n        include: health,info,metrics,slowsql\nspring:\n  datasource:\n    dynamic:\n      seata: false\nmse:\n  open:\n    crypt-key: mse-open-default-crypt-key-please-change\n    token-ttl-minutes: 120\n    default-rate-limit: 50\n"
+        },
+        {
+          "path": "deploy/nacos/config/mse-data.yaml",
+          "content": "# 交付基线（mse-data 专属）。源头：mse-modules/mse-data/docker/nacos/config/mse-data.yaml。\nserver:\n  port: 8093\nmanagement:\n  endpoints:\n    web:\n      exposure:\n        include: health,info,metrics,slowsql\nspring:\n  datasource:\n    dynamic:\n      seata: false\nmse:\n  data:\n    crypt-key: mse-data-default-crypt-key-please-change\n    pool:\n      max-pool-size: 8\n      idle-timeout-seconds: 300\n    sync:\n      batch-size: 2000\n      executor-parallelism: 2\n    open:\n      signature-timeout-seconds: 300\n"
+        },
+        {
+          "path": "deploy/nacos/config/mse-ai.yaml",
+          "content": "# 交付基线（mse-ai 专属：milvus 保守默认关，Spring AI 默认模型关）。源头：mse-modules/mse-ai/docker/nacos/config/mse-ai.yaml。\nserver:\n  port: 8094\nmanagement:\n  endpoints:\n    web:\n      exposure:\n        include: health,info,metrics,slowsql\nspring:\n  ai:\n    chat:\n      client:\n        enabled: false\nmse:\n  ai:\n    crypt-key: mse-ai-default-crypt-key-please-change\n    sse-timeout-millis: 300000\n    rpc-tool-timeout-millis: 60000\n    chat-timeout-millis: 120000\n    memory-window: 40\n    milvus-enabled: false\n    milvus-host: localhost\n    milvus-port: 19530\n    embedding-dimensions: 1024\n    kb-storage-path: ./data/ai-kb\n    kb-parse-workers: 2\n    rerank:\n      enabled: false\n    mcp-server-enabled: false\n  service:\n    ai:\n      controller:\n        enabled: true\n"
+        },
+        {
+          "path": "deploy/nacos/config/mse-fs.yaml",
+          "content": "# 交付基线（mse-fs 专属：local 盘保守默认，勾选 rustfs 组件后经 Nacos 控制台或重装切换）。\n# 源头：mse-modules/mse-fs/docker/nacos/config/mse-fs.yaml。\nserver:\n  port: 8095\nmanagement:\n  endpoints:\n    web:\n      exposure:\n        include: health,info,metrics,slowsql\nspring:\n  servlet:\n    multipart:\n      max-file-size: 100MB\n      max-request-size: 100MB\n  datasource:\n    dynamic:\n      seata: false\nmse:\n  fs:\n    storage:\n      type: local\n      local:\n        base-dir: ./data/fs-files\n      rustfs:\n        endpoint: http://localhost:9000\n        access-key: rustfsadmin\n        secret-key: rustfsadmin\n        bucket: mse-fs\n        region: us-east-1\n        path-style-access: true\n      presign:\n        enabled: false\n        ttl-seconds: 3600\n"
+        },
+        {
+          "path": "deploy/nacos/config/mse-search.yaml",
+          "content": "# 交付基线（mse-search 专属；ES 地址经 MSE_ES_HOST 环境变量或 Nacos 控制台按需调整——交付基线不渲染可选中间件端点）。\n# 源头：mse-modules/mse-search/docker/nacos/config/mse-search.yaml。\nserver:\n  port: 8096\nmanagement:\n  endpoints:\n    web:\n      exposure:\n        include: health,info,metrics,slowsql\nspring:\n  elasticsearch:\n    uris: http://${MSE_ES_HOST:localhost}:9200\nmse:\n  service:\n    search:\n      controller:\n        enabled: true\n  search:\n    index-prefix: mse-search\n    analyzer: smartcn\n    idle-window: 00:00-07:00\n    registry:\n      interval-minutes: 5\n    scan:\n      enabled: true\n      poll-interval-ms: 20000\n      initial-delay-ms: 30000\n      batch-interval-ms: 500\n      max-batches-per-tick: 200\n      default-cron: \"0 */10 * * * ?\"\n      default-batch-size: 500\n      default-shard-count: 1\n    task:\n      enabled: true\n      poll-interval-ms: 30000\n      initial-delay-ms: 30000\n"
+        },
+        {
+          "path": "deploy/nacos/config/mse-monitor.yaml",
+          "content": "# 交付基线（mse-monitor 专属：租户私有交付=离线自管模式）。源头：mse-modules/mse-monitor/docker/nacos/config/mse-monitor.yaml。\nserver:\n  port: 8097\nmanagement:\n  endpoints:\n    web:\n      exposure:\n        include: health,info,metrics,slowsql\nmse:\n  service:\n    monitor:\n      controller:\n        enabled: true\n  monitor:\n    offline: true\n    scan-interval-ms: 10000\n    default-collect-interval: 30\n    retention-days: 7\n    executor-parallelism: 4\n    actuator-token: \"\"\n    probe:\n      timeout-ms: 5000\n    redis:\n      scan-limit: 5000\n"
+        },
+        {
+          "path": "deploy/nacos/config/mse-mes.yaml",
+          "content": "# 交付基线（mse-mes 专属）。源头：mse-modules/mse-mes/docker/nacos/config/mse-mes.yaml。\nserver:\n  port: 8098\nmanagement:\n  endpoints:\n    web:\n      exposure:\n        include: health,info,metrics,slowsql\nspring:\n  datasource:\n    dynamic:\n      seata: false\n"
+        },
+        {
+          "path": "deploy/nacos/config/mse-im.yaml",
+          "content": "# 交付基线（mse-im 专属：未部署 openim 时保守默认关）。源头：mse-modules/mse-im/docker/nacos/config/mse-im.yaml。\nserver:\n  port: 8099\nmanagement:\n  endpoints:\n    web:\n      exposure:\n        include: health,info,metrics\nspring:\n  servlet:\n    multipart:\n      max-file-size: 5MB\n      max-request-size: 10MB\n  datasource:\n    dynamic:\n      seata: false\nmse:\n  im:\n    enabled: ${MSE_IM_ENABLED:false}\n    crypt-key: mse-im-default-crypt-key-please-change\n    web-base-url: ${MSE_IM_WEB_BASE_URL:http://localhost:3000}\n    server:\n      api-url: ${MSE_IM_API_URL:http://127.0.0.1:10002}\n      ws-url: ${MSE_IM_WS_URL:ws://127.0.0.1:10001}\n      public-api-url: ${MSE_IM_PUBLIC_API_URL:}\n      public-ws-url: ${MSE_IM_PUBLIC_WS_URL:}\n      secret: ${MSE_IM_SECRET:}\n      admin-user-id: imAdmin\n    servers: {}\n    sso:\n      code-ttl-seconds: 60\n      issue-rate-limit: 30\n      allow-empty-origin: false\n    client:\n      timeout-ms: 5000\n      admin-token-refresh-ahead-seconds: 600\n    ssrf:\n      allow-private-cidrs:\n        - loopback\n        - 10.0.0.0/8\n        - 172.16.0.0/12\n        - 192.168.0.0/16\n    callback:\n      base-url: ${MSE_IM_CALLBACK_BASE_URL:http://127.0.0.1:48080}\n    provision:\n      enabled: false\n      template-dir: docker/openim\n      data-root: ./im-provision-data\n      port-base: 11000\n      block-size: 10\n      health-timeout-seconds: 180\n"
+        }
+      ],
+      "configCenter": {
+        "kind": "nacos",
+        "plugin": "nacos-config",
+        "identityKey": "NACOS_IDENTITY_KEY",
+        "identityValue": "NACOS_IDENTITY_VALUE",
+        "configs": [
+          {
+            "dataId": "mse-micro-common.yaml",
+            "file": "deploy/nacos/config/mse-micro-common.yaml"
+          },
+          {
+            "dataId": "mse-micro-db.yaml",
+            "file": "deploy/nacos/config/mse-micro-db.yaml"
+          },
+          {
+            "dataId": "mse-micro-db-biz.yaml",
+            "file": "deploy/nacos/config/mse-micro-db-biz.yaml"
+          },
+          {
+            "dataId": "mse-micro-dubbo.yaml",
+            "file": "deploy/nacos/config/mse-micro-dubbo.yaml"
+          },
+          {
+            "dataId": "mse-gateway.yaml",
+            "file": "deploy/nacos/config/mse-gateway.yaml"
+          },
+          {
+            "dataId": "mse-system.yaml",
+            "file": "deploy/nacos/config/mse-system.yaml"
+          },
+          {
+            "dataId": "mse-platform.yaml",
+            "file": "deploy/nacos/config/mse-platform.yaml"
+          },
+          {
+            "dataId": "mse-auth.yaml",
+            "file": "deploy/nacos/config/mse-auth.yaml"
+          },
+          {
+            "dataId": "mse-job.yaml",
+            "file": "deploy/nacos/config/mse-job.yaml"
+          },
+          {
+            "dataId": "mse-oa.yaml",
+            "file": "deploy/nacos/config/mse-oa.yaml"
+          },
+          {
+            "dataId": "mse-mp.yaml",
+            "file": "deploy/nacos/config/mse-mp.yaml"
+          },
+          {
+            "dataId": "mse-open.yaml",
+            "file": "deploy/nacos/config/mse-open.yaml"
+          },
+          {
+            "dataId": "mse-data.yaml",
+            "file": "deploy/nacos/config/mse-data.yaml"
+          },
+          {
+            "dataId": "mse-ai.yaml",
+            "file": "deploy/nacos/config/mse-ai.yaml"
+          },
+          {
+            "dataId": "mse-fs.yaml",
+            "file": "deploy/nacos/config/mse-fs.yaml"
+          },
+          {
+            "dataId": "mse-search.yaml",
+            "file": "deploy/nacos/config/mse-search.yaml"
+          },
+          {
+            "dataId": "mse-monitor.yaml",
+            "file": "deploy/nacos/config/mse-monitor.yaml"
+          },
+          {
+            "dataId": "mse-mes.yaml",
+            "file": "deploy/nacos/config/mse-mes.yaml"
+          },
+          {
+            "dataId": "mse-im.yaml",
+            "file": "deploy/nacos/config/mse-im.yaml"
+          }
+        ]
+      }
+    }
+  ]
+}

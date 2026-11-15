@@ -1,0 +1,22 @@
+.DS_Store
+*.log
+*.exe
+
+**/logs/
+
+# 运行期数据（console.db/WAL/日志等，不入库）
+**/console-data/
+**/deliver-data/
+deliver-studio/deliver-data/
+deliver-studio/installer-bin/
+deliver-studio/deliver-studio-linux
+
+**/node_modules/
+node_modules/
+**/dist/
+dist/
+.zcode/
+
+# 内嵌 agent/plugin 二进制为跟踪产物（deliver-console go:embed 构建依赖），勿忽略
+!deliver-console/agent-bin/**
+!deliver-console/plugin-bin/**
