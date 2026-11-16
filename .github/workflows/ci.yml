@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Go 构建 + 测试（四模块）
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache-dependency-path: |
+            deliver-console/go.sum
+            deliver-studio/go.sum
+            deliver-agent/go.sum
+      - name: deliver-agent / deliver-plugins
+        run: |
+          (cd deliver-agent && go build ./... && go vet ./...)
+          (cd deliver-plugins/nacos-config && go build ./... && go vet ./...)
+      - name: deliver-studio（UI → go build + test）
+        run: |
+          (cd deliver-studio/ui && npm ci --no-audit --no-fund && npm run build)
+          (cd deliver-studio && go build ./... && go test ./...)
+      - name: deliver-console（agent/plugins 交叉编译 → go build + test）
+        run: |
+          (cd deliver-console && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o agent-bin/deliver-agent-linux ../deliver-agent)
+          (cd deliver-console && GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o agent-bin/deliver-agent-windows.exe ../deliver-agent)
+          (cd deliver-console && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o plugin-bin/nacos-config-linux ../deliver-plugins/nacos-config)
+          (cd deliver-console && GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o plugin-bin/nacos-config-windows.exe ../deliver-plugins/nacos-config)
+          (cd deliver-console/ui && npm ci --no-audit --no-fund && npm run build)
+          (cd deliver-console && go build ./... && go test ./...)
+
+  frontend:
+    name: 前端构建（console ui / studio ui）
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: |
+            deliver-console/ui/package-lock.json
+            deliver-studio/ui/package-lock.json
+      - run: (cd deliver-console/ui && npm ci --no-audit --no-fund && npm run build)
+      - run: (cd deliver-studio/ui && npm ci --no-audit --no-fund && npm run build)
